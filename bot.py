@@ -639,28 +639,47 @@ async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE, s
     )
 
 
+# Timeout upload video dinaikkan jauh dari default (default library ~ 5-20 detik),
+# supaya file besar / koneksi lambat tidak gampang kena "Timed out".
+UPLOAD_READ_TIMEOUT = 300
+UPLOAD_WRITE_TIMEOUT = 300
+UPLOAD_CONNECT_TIMEOUT = 60
+UPLOAD_MAX_RETRY = 2  # total percobaan kirim per klip kalau timeout
+
+
 async def _send_clip(bot, chat_id: int, clip: dict) -> bool:
     """Kirim 1 klip yang sudah 'done' ke chat. Return True kalau berhasil terkirim."""
-    try:
-        size = os.path.getsize(clip["out_path"])
-        if size > 49 * 1024 * 1024:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ {clip['filename']} terlalu besar untuk dikirim via Telegram (>49MB).",
-            )
-            return False
-        with open(clip["out_path"], "rb") as f:
-            await bot.send_video(
-                chat_id=chat_id,
-                video=f,
-                filename=clip["filename"],
-                caption=clip["filename"],
-                supports_streaming=True,
-            )
-        return True
-    except Exception as e:
-        await bot.send_message(chat_id=chat_id, text=f"⚠️ Gagal kirim {clip['filename']}: {e}")
+    size = os.path.getsize(clip["out_path"])
+    if size > 49 * 1024 * 1024:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ {clip['filename']} terlalu besar untuk dikirim via Telegram (>49MB).",
+        )
         return False
+
+    last_err = None
+    for attempt in range(1, UPLOAD_MAX_RETRY + 1):
+        try:
+            with open(clip["out_path"], "rb") as f:
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=f,
+                    filename=clip["filename"],
+                    caption=clip["filename"],
+                    supports_streaming=True,
+                    read_timeout=UPLOAD_READ_TIMEOUT,
+                    write_timeout=UPLOAD_WRITE_TIMEOUT,
+                    connect_timeout=UPLOAD_CONNECT_TIMEOUT,
+                )
+            return True
+        except Exception as e:
+            last_err = e
+            if attempt < UPLOAD_MAX_RETRY:
+                await asyncio.sleep(2)
+                continue
+
+    await bot.send_message(chat_id=chat_id, text=f"⚠️ Gagal kirim {clip['filename']}: {last_err}")
+    return False
 
 
 async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id: str, status_message_id: int):
@@ -863,7 +882,15 @@ def main():
 
     threading.Thread(target=cleanup_old_outputs, daemon=True).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .read_timeout(UPLOAD_READ_TIMEOUT)
+        .write_timeout(UPLOAD_WRITE_TIMEOUT)
+        .connect_timeout(UPLOAD_CONNECT_TIMEOUT)
+        .pool_timeout(UPLOAD_CONNECT_TIMEOUT)
+        .build()
+    )
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
