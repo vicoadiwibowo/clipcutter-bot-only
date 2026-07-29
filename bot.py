@@ -639,9 +639,40 @@ async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE, s
     )
 
 
+async def _send_clip(bot, chat_id: int, clip: dict) -> bool:
+    """Kirim 1 klip yang sudah 'done' ke chat. Return True kalau berhasil terkirim."""
+    try:
+        size = os.path.getsize(clip["out_path"])
+        if size > 49 * 1024 * 1024:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ {clip['filename']} terlalu besar untuk dikirim via Telegram (>49MB).",
+            )
+            return False
+        with open(clip["out_path"], "rb") as f:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=f,
+                filename=clip["filename"],
+                caption=clip["filename"],
+                supports_streaming=True,
+            )
+        return True
+    except Exception as e:
+        await bot.send_message(chat_id=chat_id, text=f"⚠️ Gagal kirim {clip['filename']}: {e}")
+        return False
+
+
 async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id: str, status_message_id: int):
+    """
+    Pantau progress semua klip dalam session ini. Begitu ada klip yang
+    statusnya jadi 'done', langsung kirim videonya saat itu juga --
+    tidak perlu menunggu klip lain selesai.
+    """
     bot = context.bot
     last_text = ""
+    sent = set()  # filename klip yang sudah terkirim, biar tidak dobel
+    ok_count = 0
 
     while True:
         data = JOBS.get(session_id)
@@ -649,8 +680,16 @@ async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id
             return
 
         clips = data["clips"]
+
+        # Kirim klip yang baru saja selesai (status 'done' & belum dikirim)
+        for clip in clips:
+            if clip["status"] == "done" and clip["filename"] not in sent:
+                sent.add(clip["filename"])
+                if await _send_clip(bot, chat_id, clip):
+                    ok_count += 1
+
         done = sum(1 for c in clips if c["status"] in ("done", "error"))
-        text = f"⏳ Memproses klip... {done}/{len(clips)} selesai"
+        text = f"⏳ Memproses klip... {done}/{len(clips)} selesai ({ok_count} terkirim)"
         if text != last_text:
             try:
                 await bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=text)
@@ -660,31 +699,7 @@ async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id
 
         if data["finished"]:
             break
-        await asyncio.sleep(3)
-
-    ok_count = 0
-    for clip in clips:
-        if clip["status"] != "done":
-            continue
-        try:
-            size = os.path.getsize(clip["out_path"])
-            if size > 49 * 1024 * 1024:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ {clip['filename']} terlalu besar untuk dikirim via Telegram (>49MB).",
-                )
-                continue
-            with open(clip["out_path"], "rb") as f:
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=f,
-                    filename=clip["filename"],
-                    caption=clip["filename"],
-                    supports_streaming=True,
-                )
-            ok_count += 1
-        except Exception as e:
-            await bot.send_message(chat_id=chat_id, text=f"⚠️ Gagal kirim {clip['filename']}: {e}")
+        await asyncio.sleep(2)
 
     await bot.edit_message_text(
         chat_id=chat_id, message_id=status_message_id,
