@@ -3,52 +3,108 @@ set -e
 
 export DEBIAN_FRONTEND=noninteractive
 
-REPO_RAW="https://raw.githubusercontent.com/USERNAME/REPO-BARU/main"
+REPO_RAW="https://raw.githubusercontent.com/vicoadiwibowo/clipcutter-bot-only/main"
 CLIPCUTTER_DIR=~/clipcutter
 
-echo "Clip Cutter Bot - Auto Installer (bot only, tanpa web)"
-echo "======================================================="
+# ----------------------------------------------------------------------
+# Helper tampilan rapi
+# ----------------------------------------------------------------------
+step() {
+  echo ""
+  echo "▶ $1"
+}
 
-echo "[1/5] Update & install paket dasar (python, ffmpeg, git)..."
-yes n | apt-get update -y
-yes n | apt-get upgrade -y \
+ok() {
+  echo "  ✓ $1"
+}
+
+fail() {
+  echo "  ✗ $1"
+}
+
+echo "=================================================="
+echo "   Clip Cutter Bot - Auto Installer (bot only)"
+echo "=================================================="
+
+# ----------------------------------------------------------------------
+# [1/5] Update & paket dasar
+# ----------------------------------------------------------------------
+step "[1/5] Update paket Termux..."
+yes n | apt-get update -y -qq >/dev/null 2>&1
+ok "Update selesai"
+
+step "[1/5] Upgrade paket Termux..."
+yes n | apt-get upgrade -y -qq \
   -o Dpkg::Options::="--force-confdef" \
-  -o Dpkg::Options::="--force-confold"
-yes n | apt-get install -y \
+  -o Dpkg::Options::="--force-confold" >/dev/null 2>&1
+ok "Upgrade selesai"
+
+step "[1/5] Install python, ffmpeg, git..."
+yes n | apt-get install -y -qq \
   -o Dpkg::Options::="--force-confdef" \
   -o Dpkg::Options::="--force-confold" \
-  python ffmpeg git
+  python ffmpeg git >/dev/null 2>&1
+ok "python, ffmpeg, git terpasang"
 
-echo "[2/5] Install library Python (python-telegram-bot, yt-dlp)..."
-pip install python-telegram-bot yt-dlp requests --break-system-packages 2>/dev/null \
-  || pip install python-telegram-bot yt-dlp requests
+# ----------------------------------------------------------------------
+# [2/5] Library Python
+# ----------------------------------------------------------------------
+step "[2/5] Install python-telegram-bot..."
+pip install -q python-telegram-bot --break-system-packages >/dev/null 2>&1 \
+  || pip install -q python-telegram-bot >/dev/null 2>&1
+ok "python-telegram-bot terpasang"
 
-echo "[3/5] Setup akses storage (izinkan lewat pop-up yang muncul)..."
+step "[2/5] Install yt-dlp..."
+pip install -q yt-dlp --break-system-packages >/dev/null 2>&1 \
+  || pip install -q yt-dlp >/dev/null 2>&1
+ok "yt-dlp terpasang"
+
+step "[2/5] Install requests..."
+pip install -q requests --break-system-packages >/dev/null 2>&1 \
+  || pip install -q requests >/dev/null 2>&1
+ok "requests terpasang"
+
+# ----------------------------------------------------------------------
+# [3/5] Storage
+# ----------------------------------------------------------------------
+step "[3/5] Setup akses storage (izinkan lewat pop-up yang muncul)..."
 termux-setup-storage
 sleep 2
+ok "Storage siap"
 
-echo "[4/5] Mengunduh bot.py terbaru dari repo..."
+# ----------------------------------------------------------------------
+# [4/5] Unduh bot.py
+# ----------------------------------------------------------------------
+step "[4/5] Mengunduh bot.py dari repo..."
 mkdir -p "$CLIPCUTTER_DIR"
 curl -fsSL "$REPO_RAW/bot.py" -o "$CLIPCUTTER_DIR/bot.py"
 
 if [ ! -s "$CLIPCUTTER_DIR/bot.py" ]; then
-  echo "GAGAL: bot.py tidak berhasil diunduh atau kosong. Cek URL repo-nya."
+  fail "bot.py tidak berhasil diunduh atau kosong. Cek REPO_RAW / nama file di repo."
   exit 1
 fi
-python3 -c "import py_compile; py_compile.compile('$CLIPCUTTER_DIR/bot.py', doraise=True)" \
-  && echo "bot.py valid (sintaks OK)" \
-  || { echo "GAGAL: bot.py yang diunduh punya error sintaks."; exit 1; }
+ok "bot.py berhasil diunduh"
 
-echo "[5/5] Cek token Bot Telegram & setup auto-start..."
+python3 -c "import py_compile; py_compile.compile('$CLIPCUTTER_DIR/bot.py', doraise=True)" \
+  >/dev/null 2>&1 \
+  && ok "bot.py valid (sintaks OK)" \
+  || { fail "bot.py punya error sintaks."; exit 1; }
+
+# ----------------------------------------------------------------------
+# [5/5] Token & auto-start
+# ----------------------------------------------------------------------
+step "[5/5] Cek token Bot Telegram..."
 TOKEN_FILE="$CLIPCUTTER_DIR/bot_token.txt"
 if [ -s "$TOKEN_FILE" ]; then
-  echo "Token bot ditemukan, akan dipakai."
+  ok "Token ditemukan"
 else
-  echo "Token bot belum ada. Isi dulu sebelum bot bisa jalan:"
-  echo "  echo 'TOKEN_KAMU' > $CLIPCUTTER_DIR/bot_token.txt"
+  fail "Token belum ada. Isi nanti dengan:"
+  echo "     echo 'TOKEN_KAMU' > $CLIPCUTTER_DIR/bot_token.txt"
 fi
 
-# --- A. Auto-start tiap sesi Termux dibuka (lewat .bashrc) ---
+step "[5/5] Setup auto-start..."
+
+# A. Auto-start tiap sesi Termux dibuka (lewat .bashrc)
 BASHRC=~/.bashrc
 MARKER="# >>> clipcutter-autostart >>>"
 if ! grep -qF "$MARKER" "$BASHRC" 2>/dev/null; then
@@ -61,12 +117,12 @@ if [ -s "$CLIPCUTTER_DIR/bot_token.txt" ] && ! pgrep -f "bot.py" > /dev/null 2>&
 fi
 # <<< clipcutter-autostart <<<
 EOF
-  echo "Auto-start .bashrc terpasang."
+  ok "Auto-start .bashrc terpasang"
 else
-  echo "Auto-start .bashrc sudah ada dari sebelumnya, dilewati."
+  ok "Auto-start .bashrc sudah ada, dilewati"
 fi
 
-# --- B. Auto-start tiap HP restart (lewat Termux:Boot) ---
+# B. Auto-start tiap HP restart (lewat Termux:Boot)
 mkdir -p ~/.termux/boot
 BOOT_SCRIPT=~/.termux/boot/start-clipcutter.sh
 {
@@ -78,8 +134,12 @@ BOOT_SCRIPT=~/.termux/boot/start-clipcutter.sh
   echo "fi"
 } > "$BOOT_SCRIPT"
 chmod +x "$BOOT_SCRIPT"
+ok "Auto-start Termux:Boot terpasang"
 
-echo "Menjalankan bot sekarang (jika token sudah ada)..."
+# ----------------------------------------------------------------------
+# Jalankan sekarang
+# ----------------------------------------------------------------------
+step "Menjalankan bot (jika token sudah ada)..."
 pkill -9 -f "bot.py" 2>/dev/null || true
 sleep 1
 
@@ -88,30 +148,30 @@ if [ -s "$TOKEN_FILE" ]; then
   BOT_TOKEN="$(cat "$TOKEN_FILE")" nohup python bot.py > bot.log 2>&1 &
   disown
   BOT_STARTED=1
+  ok "Bot dijalankan di background"
 else
   BOT_STARTED=0
 fi
 
-sleep 1
 echo ""
-echo "=================================="
-echo "SELESAI!"
-echo "=================================="
+echo "=================================================="
+echo "   SELESAI!"
+echo "=================================================="
 if [ "$BOT_STARTED" = "1" ]; then
-  echo "Bot Telegram : aktif, coba /start di chat bot kamu"
+  echo "Bot Telegram : aktif -- coba /start di chat bot kamu"
 else
-  echo "Bot Telegram : BELUM aktif (token belum diisi)."
-  echo "  Isi dengan:"
+  echo "Bot Telegram : BELUM aktif (token belum diisi)"
+  echo ""
+  echo "Isi token dulu:"
   echo "  echo 'TOKEN_KAMU' > $CLIPCUTTER_DIR/bot_token.txt"
-  echo "  lalu buka Termux baru, atau jalankan manual:"
+  echo ""
+  echo "Lalu jalankan manual:"
   echo "  cd $CLIPCUTTER_DIR && BOT_TOKEN=\$(cat bot_token.txt) python bot.py"
 fi
 echo ""
-echo "Mulai sekarang, setiap kali kamu buka Termux, bot akan otomatis"
-echo "nyala sendiri di background -- tidak perlu ketik apapun."
+echo "Mulai sekarang, setiap buka Termux, bot otomatis nyala di background."
 echo ""
 echo "Catatan:"
-echo "- Kalau ini HP baru: install juga aplikasi 'Termux:Boot' dari"
-echo "  sumber yang sama dengan Termux (F-Droid/Play Store), buka sekali,"
+echo "- HP baru: install juga 'Termux:Boot' (F-Droid/Play Store), buka sekali,"
 echo "  lalu set baterai Termux & Termux:Boot ke 'Unrestricted'."
 echo "- Pastikan izin storage sudah di-Allow saat pop-up muncul tadi."
