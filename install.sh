@@ -68,9 +68,9 @@ ok "requests terpasang"
 # [3/5] Storage
 # ----------------------------------------------------------------------
 step "[3/5] Setup akses storage (izinkan lewat pop-up yang muncul)..."
-termux-setup-storage
+termux-setup-storage || true
 sleep 2
-ok "Storage siap"
+ok "Storage siap (atau sudah pernah di-setup sebelumnya)"
 
 # ----------------------------------------------------------------------
 # [4/5] Unduh bot.py
