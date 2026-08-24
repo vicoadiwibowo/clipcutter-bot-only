@@ -95,11 +95,21 @@ python3 -c "import py_compile; py_compile.compile('$CLIPCUTTER_DIR/bot.py', dora
 # ----------------------------------------------------------------------
 step "[5/5] Cek token Bot Telegram..."
 TOKEN_FILE="$CLIPCUTTER_DIR/bot_token.txt"
+
 if [ -s "$TOKEN_FILE" ]; then
-  ok "Token ditemukan"
+  ok "Token sudah ada, lewati input"
 else
-  fail "Token belum ada. Isi nanti dengan:"
-  echo "     echo 'TOKEN_KAMU' > $CLIPCUTTER_DIR/bot_token.txt"
+  echo ""
+  echo "  Masukkan token Bot Telegram kamu (dari @BotFather), lalu Enter:"
+  read -r -p "  Token: " INPUT_TOKEN < /dev/tty
+
+  if [ -n "$INPUT_TOKEN" ]; then
+    printf '%s' "$INPUT_TOKEN" > "$TOKEN_FILE"
+    ok "Token tersimpan di $TOKEN_FILE"
+  else
+    fail "Token kosong, dilewati. Isi nanti dengan:"
+    echo "     echo 'TOKEN_KAMU' > $TOKEN_FILE"
+  fi
 fi
 
 step "[5/5] Setup auto-start..."
