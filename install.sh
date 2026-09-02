@@ -59,11 +59,6 @@ pip install -q yt-dlp --break-system-packages >/dev/null 2>&1 \
   || pip install -q yt-dlp >/dev/null 2>&1
 ok "yt-dlp terpasang"
 
-step "[2/5] Install requests..."
-pip install -q requests --break-system-packages >/dev/null 2>&1 \
-  || pip install -q requests >/dev/null 2>&1
-ok "requests terpasang"
-
 # ----------------------------------------------------------------------
 # [3/5] Storage
 # ----------------------------------------------------------------------
