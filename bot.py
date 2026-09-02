@@ -5,7 +5,7 @@ Semua proses (potong video, watermark, subtitle, download YouTube)
 jalan langsung di dalam bot ini. Tidak ada server web sama sekali.
 
 Setup:
-  pip install python-telegram-bot requests yt-dlp --break-system-packages
+  pip install python-telegram-bot yt-dlp --break-system-packages
 
 Jalankan:
   export BOT_TOKEN="isi_token_dari_BotFather"
@@ -278,24 +278,80 @@ def _run_ffmpeg_with_progress(cmd, duration, on_progress):
     return success, "".join(stderr_lines)[-2000:]
 
 
-def cut_clip(input_path, start, end, out_path, on_progress, ass_path=None, square_size=1080):
-    duration = max(1, to_seconds(end) - to_seconds(start))
+INSERT_FADE_SECONDS = 0.4  # lama transisi fade in/out gambar sisipan (muncul & redup keluar)
 
-    filters_ = [CROP_1TO1, build_watermark_filter(square_size)]
+
+def cut_clip(input_path, start, end, out_path, on_progress, ass_path=None, square_size=1080, inserts=None):
+    """
+    inserts: list opsional berisi dict {"path", "start_sec", "duration"} -- gambar yang
+    akan disisipkan di dalam klip pada detik "start_sec" (relatif ke awal klip), tampil
+    selama "duration" detik, dengan transisi fade in (muncul) dan fade out (redup keluar).
+    """
+    duration = max(1, to_seconds(end) - to_seconds(start))
+    inserts = inserts or []
+
+    base_filters = [CROP_1TO1, build_watermark_filter(square_size)]
     has_subtitle = bool(ass_path)
     if has_subtitle:
         escaped = escape_for_ffmpeg_filter(ass_path)
-        filters_.append(f"subtitles='{escaped}'")
-    vf = ",".join(filters_)
+        base_filters.append(f"subtitles='{escaped}'")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-ss", start,
-        "-i", input_path,
-        "-t", str(duration),
-        "-map", "0:v:0",
+    # -ss & -t sebagai input option (sebelum -i) supaya seek akurat dan tidak ambigu
+    # begitu ada -i tambahan untuk tiap gambar sisipan setelahnya.
+    cmd = ["ffmpeg", "-y", "-ss", start, "-t", str(duration), "-i", input_path]
+
+    if not inserts:
+        vf = ",".join(base_filters)
+        cmd += [
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "20",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-avoid_negative_ts", "make_zero",
+            "-movflags", "+faststart",
+            "-progress", "pipe:1",
+            "-nostats",
+            out_path,
+        ]
+        return _run_ffmpeg_with_progress(cmd, duration, on_progress)
+
+    # -------- Ada gambar sisipan: pakai filter_complex multi-input --------
+    filter_parts = [f"[0:v]{','.join(base_filters)}[base]"]
+
+    for i, ins in enumerate(inserts):
+        ins_dur = max(0.1, float(ins["duration"]))
+        cmd += ["-loop", "1", "-t", f"{ins_dur:.3f}", "-i", ins["path"]]
+        input_idx = i + 1
+        fade_d = min(INSERT_FADE_SECONDS, ins_dur / 2)
+        fade_out_st = max(0.0, ins_dur - fade_d)
+        filter_parts.append(
+            f"[{input_idx}:v]scale={square_size}:{square_size}:force_original_aspect_ratio=decrease,"
+            f"pad={square_size}:{square_size}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"format=yuva420p,"
+            f"fade=t=in:st=0:d={fade_d:.3f}:alpha=1,"
+            f"fade=t=out:st={fade_out_st:.3f}:d={fade_d:.3f}:alpha=1,"
+            f"setpts=PTS-STARTPTS+{float(ins['start_sec']):.3f}/TB[img{i}]"
+        )
+
+    prev = "base"
+    for i, ins in enumerate(inserts):
+        start_sec = float(ins["start_sec"])
+        end_sec = start_sec + max(0.1, float(ins["duration"]))
+        label = f"ov{i}"
+        enable_expr = f"between(t\\,{start_sec:.3f}\\,{end_sec:.3f})"
+        filter_parts.append(f"[{prev}][img{i}]overlay=x=0:y=0:enable='{enable_expr}'[{label}]")
+        prev = label
+
+    filter_complex = ";".join(filter_parts)
+
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", f"[{prev}]",
         "-map", "0:a:0?",
-        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "20",
@@ -457,7 +513,8 @@ def run_job(session_id, video_path, full_srt_path):
 
         success, log = cut_clip(
             video_path, clip["start"], clip["end"], out_path, cb,
-            ass_path=clip_ass_path, square_size=square_size
+            ass_path=clip_ass_path, square_size=square_size,
+            inserts=clip.get("inserts"),
         )
 
         clip["has_subtitle"] = used_subtitle
@@ -476,7 +533,7 @@ def run_job(session_id, video_path, full_srt_path):
 # Bot Telegram
 # ======================================================================
 
-MAIN_MENU, ASK_PATH, ASK_TIMESTAMPS, ASK_SRT, ASK_YOUTUBE_URL, ASK_DELETE_NAME = range(6)
+MAIN_MENU, ASK_PATH, ASK_TIMESTAMPS, ASK_SRT, ASK_IMAGES, ASK_YOUTUBE_URL, ASK_DELETE_NAME = range(7)
 
 LAST_SESSION = {}
 
@@ -487,6 +544,8 @@ BTN_LIST = "📃 Daftar Video"
 BTN_DELETE = "🗑️ Hapus Video"
 BTN_BATAL = "❌ Batal"
 BTN_LEWATI = "⏭️ Lewati (Tanpa Subtitle)"
+BTN_LEWATI_GAMBAR = "⏭️ Lewati (Tanpa Gambar)"
+BTN_SELESAI_GAMBAR = "✅ Selesai Tambah Gambar"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -501,6 +560,27 @@ SRT_KEYBOARD = ReplyKeyboardMarkup(
     [[BTN_LEWATI], [BTN_BATAL]],
     resize_keyboard=True,
 )
+
+IMAGE_KEYBOARD = ReplyKeyboardMarkup(
+    [[BTN_SELESAI_GAMBAR], [BTN_LEWATI_GAMBAR], [BTN_BATAL]],
+    resize_keyboard=True,
+)
+
+# Format caption gambar insert shot: "<nomor_klip> <MM:SS atau HH:MM:SS> <durasi_detik> [label]"
+# Nomor klip = urutan baris timestamp yang dipaste sebelumnya (klip 1, klip 2, dst).
+IMAGE_CAPTION_PATTERN = re.compile(
+    r"^\s*(\d+)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(\d+(?:\.\d+)?)\s*(.*)$"
+)
+
+
+def _mmss_to_seconds(value: str) -> float:
+    parts = value.split(":")
+    parts = [int(p) for p in parts]
+    if len(parts) == 2:
+        m, s = parts
+        return m * 60 + s
+    h, m, s = parts
+    return h * 3600 + m * 60 + s
 
 
 def code(text: str) -> str:
@@ -570,23 +650,110 @@ async def receive_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     tg_file = await document.get_file()
     file_bytes = await tg_file.download_as_bytearray()
 
-    await update.message.reply_text("Subtitle diterima. Memulai proses...", reply_markup=MAIN_KEYBOARD)
-    await start_processing(
-        update, context,
-        srt_bytes=bytes(file_bytes), srt_filename=document.file_name,
-    )
-    return MAIN_MENU
+    context.user_data["srt_bytes"] = bytes(file_bytes)
+    context.user_data["srt_filename"] = document.file_name
+    await update.message.reply_text("Subtitle diterima.")
+    return await prompt_images(update, context)
 
 
 async def skip_srt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Oke, tanpa subtitle. Memulai proses...", reply_markup=MAIN_KEYBOARD)
-    await start_processing(update, context, srt_bytes=None, srt_filename=None)
+    context.user_data["srt_bytes"] = None
+    context.user_data["srt_filename"] = None
+    await update.message.reply_text("Oke, tanpa subtitle.")
+    return await prompt_images(update, context)
+
+
+async def prompt_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["images"] = []
+    await update.message.reply_text(
+        "Mau tambah gambar insert shot? Gambar akan muncul dengan transisi "
+        "fade in (muncul) lalu fade out redup (menghilang), menimpa video sesaat.\n\n"
+        "Kirim gambar satu per satu, tiap gambar sebagai CAPTION-nya isi:\n"
+        "<nomor klip> <timestamp MM:SS relatif ke awal klip> <durasi tampil detik> [label opsional]\n\n"
+        "Contoh: gambar dikirim dengan caption\n"
+        "1 00:05 2.5 chart data\n"
+        "→ artinya masuk ke klip nomor 1, muncul di detik ke-5 klip itu, tampil 2.5 detik.\n\n"
+        "Kalau sudah selesai kirim semua gambar, tekan 'Selesai Tambah Gambar'. "
+        "Kalau tidak perlu gambar, tekan 'Lewati'.",
+        reply_markup=IMAGE_KEYBOARD,
+    )
+    return ASK_IMAGES
+
+
+async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    caption = (update.message.caption or "").strip()
+    m = IMAGE_CAPTION_PATTERN.match(caption)
+    if not m:
+        await update.message.reply_text(
+            "⚠️ Caption gambar tidak sesuai format.\n"
+            "Format: <nomor klip> <MM:SS> <durasi detik> [label]\n"
+            "Contoh: 1 00:05 2.5 chart data\n\n"
+            "Kirim ulang gambar ini dengan caption yang benar."
+        )
+        return ASK_IMAGES
+
+    clip_no, ts, dur_s, label = m.groups()
+    clip_no = int(clip_no)
+    raw_text = context.user_data.get("raw_text", "")
+    total_clips = len(parse_lines(raw_text)[0])
+    if clip_no < 1 or clip_no > total_clips:
+        await update.message.reply_text(
+            f"⚠️ Nomor klip {clip_no} tidak ada (total klip: {total_clips}). Kirim ulang."
+        )
+        return ASK_IMAGES
+
+    if update.message.photo:
+        tg_file = await update.message.photo[-1].get_file()
+        ext = ".jpg"
+    elif update.message.document and (update.message.document.mime_type or "").startswith("image/"):
+        tg_file = await update.message.document.get_file()
+        ext = os.path.splitext(update.message.document.file_name or "")[1] or ".jpg"
+    else:
+        await update.message.reply_text("⚠️ Itu bukan gambar. Kirim foto/gambar dengan caption yang sesuai format.")
+        return ASK_IMAGES
+
+    file_bytes = await tg_file.download_as_bytearray()
+
+    images = context.user_data.setdefault("images", [])
+    images.append({
+        "clip_index": clip_no,
+        "start_sec": _mmss_to_seconds(ts),
+        "duration": float(dur_s),
+        "label": label.strip(),
+        "bytes": bytes(file_bytes),
+        "ext": ext,
+    })
+
+    await update.message.reply_text(
+        f"✅ Gambar #{len(images)} ditambahkan → klip {clip_no} @ {ts} ({dur_s}s)."
+        " Kirim gambar lain, atau tekan 'Selesai Tambah Gambar'."
+    )
+    return ASK_IMAGES
+
+
+async def finish_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    n = len(context.user_data.get("images", []))
+    if n == 0:
+        await update.message.reply_text("Belum ada gambar yang dikirim. Memulai proses tanpa gambar...")
+    else:
+        await update.message.reply_text(f"Oke, {n} gambar siap disisipkan. Memulai proses...")
+    await update.message.reply_text("Memproses klip...", reply_markup=MAIN_KEYBOARD)
+    await start_processing(update, context)
     return MAIN_MENU
 
 
-async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE, srt_bytes=None, srt_filename=None):
+async def skip_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["images"] = []
+    await update.message.reply_text("Oke, tanpa gambar sisipan. Memulai proses...", reply_markup=MAIN_KEYBOARD)
+    await start_processing(update, context)
+    return MAIN_MENU
+
+
+async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_path = context.user_data.get("video_path", "")
     raw_text = context.user_data.get("raw_text", "")
+    srt_bytes = context.user_data.get("srt_bytes")
+    images = context.user_data.get("images", [])
     chat_id = update.effective_chat.id
 
     status_msg = await update.message.reply_text("⏳ Menyiapkan klip...")
@@ -602,10 +769,26 @@ async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE, s
         with open(full_srt_path, "wb") as f:
             f.write(srt_bytes)
 
+    images_dir = os.path.join(session_dir, "inserts")
+    if images:
+        os.makedirs(images_dir, exist_ok=True)
+
     clips = []
     for idx, (start, end, title) in enumerate(jobs, start=1):
         safe_title = sanitize_filename(title)
         filename = f"{idx:02d} - {safe_title}.mp4"
+
+        clip_inserts = []
+        for n, img in enumerate(i for i in images if i["clip_index"] == idx):
+            img_path = os.path.join(images_dir, f"{idx:02d}_{n:02d}{img['ext']}")
+            with open(img_path, "wb") as f:
+                f.write(img["bytes"])
+            clip_inserts.append({
+                "path": img_path,
+                "start_sec": img["start_sec"],
+                "duration": img["duration"],
+            })
+
         clips.append({
             "filename": filename,
             "start": start,
@@ -615,6 +798,7 @@ async def start_processing(update: Update, context: ContextTypes.DEFAULT_TYPE, s
             "log": "",
             "has_subtitle": False,
             "out_path": None,
+            "inserts": clip_inserts,
         })
 
     with JOBS_LOCK:
@@ -917,6 +1101,12 @@ def main():
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_LEWATI)}$"), skip_srt),
                 MessageHandler(filters.Document.ALL, receive_srt_file),
                 MessageHandler(filters.Regex(r"(?i)^(skip|lewati)$"), skip_srt),
+            ],
+            ASK_IMAGES: [
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_SELESAI_GAMBAR)}$"), finish_images),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_LEWATI_GAMBAR)}$"), skip_images),
+                MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_image),
             ],
             ASK_YOUTUBE_URL: [
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
