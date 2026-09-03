@@ -566,7 +566,7 @@ IMAGE_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# Format caption gambar insert shot: "<nomor_klip> <MM:SS atau HH:MM:SS> <durasi_detik> [label]"
+# Format caption gambar insert shot: "<nomor_klip> <HH:MM:SS> <durasi_detik> [label]"
 # Nomor klip = urutan baris timestamp yang dipaste sebelumnya (klip 1, klip 2, dst).
 IMAGE_CAPTION_PATTERN = re.compile(
     r"^\s*(\d+)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(\d+(?:\.\d+)?)\s*(.*)$"
@@ -669,9 +669,9 @@ async def prompt_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         "Mau tambah gambar insert shot? Gambar akan muncul dengan transisi "
         "fade in (muncul) lalu fade out redup (menghilang), menimpa video sesaat.\n\n"
         "Kirim gambar satu per satu, tiap gambar sebagai CAPTION-nya isi:\n"
-        "<nomor klip> <timestamp MM:SS relatif ke awal klip> <durasi tampil detik> [label opsional]\n\n"
+        "<nomor klip> <timestamp HH:MM:SS relatif ke awal klip> <durasi tampil detik> [label opsional]\n\n"
         "Contoh: gambar dikirim dengan caption\n"
-        "1 00:05 2.5 chart data\n"
+        "1 00:00:05 2.5 chart data\n"
         "→ artinya masuk ke klip nomor 1, muncul di detik ke-5 klip itu, tampil 2.5 detik.\n\n"
         "Kalau sudah selesai kirim semua gambar, tekan 'Selesai Tambah Gambar'. "
         "Kalau tidak perlu gambar, tekan 'Lewati'.",
@@ -686,8 +686,8 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not m:
         await update.message.reply_text(
             "⚠️ Caption gambar tidak sesuai format.\n"
-            "Format: <nomor klip> <MM:SS> <durasi detik> [label]\n"
-            "Contoh: 1 00:05 2.5 chart data\n\n"
+            "Format: <nomor klip> <HH:MM:SS> <durasi detik> [label]\n"
+            "Contoh: 1 00:00:05 2.5 chart data\n\n"
             "Kirim ulang gambar ini dengan caption yang benar."
         )
         return ASK_IMAGES
