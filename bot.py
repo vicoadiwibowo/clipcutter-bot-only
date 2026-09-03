@@ -1078,44 +1078,54 @@ def main():
         .build()
     )
 
+    # Tombol menu utama ini didaftarkan di SETIAP state (bukan cuma MAIN_MENU),
+    # dan selalu dicek PALING AWAL di tiap state. Ini mencegah bug: kalau tombol
+    # menu (mis. "Cek Status") ditekan saat bot masih di tengah alur lain
+    # (nunggu path/timestamp/gambar, dst), teksnya kena baca handler alur itu
+    # dan muncul "Format tidak valid". Sekarang tombol menu selalu langsung
+    # jalan & reset ke alur yang benar, di step manapun user sedang berada.
+    GLOBAL_MENU_HANDLERS = [
+        MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+        MessageHandler(filters.Regex(f"^{re.escape(BTN_STATUS)}$"), menu_status),
+        MessageHandler(filters.Regex(f"^{re.escape(BTN_POTONG)}$"), menu_potong),
+        MessageHandler(filters.Regex(f"^{re.escape(BTN_YOUTUBE)}$"), menu_youtube),
+        MessageHandler(filters.Regex(f"^{re.escape(BTN_LIST)}$"), menu_list),
+        MessageHandler(filters.Regex(f"^{re.escape(BTN_DELETE)}$"), menu_delete),
+    ]
+
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
         states={
             MAIN_MENU: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_POTONG)}$"), menu_potong),
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_STATUS)}$"), menu_status),
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_YOUTUBE)}$"), menu_youtube),
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_LIST)}$"), menu_list),
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_DELETE)}$"), menu_delete),
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fallback),
             ],
             ASK_PATH: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_path),
             ],
             ASK_TIMESTAMPS: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_timestamps),
             ],
             ASK_SRT: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_LEWATI)}$"), skip_srt),
                 MessageHandler(filters.Document.ALL, receive_srt_file),
                 MessageHandler(filters.Regex(r"(?i)^(skip|lewati)$"), skip_srt),
             ],
             ASK_IMAGES: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_SELESAI_GAMBAR)}$"), finish_images),
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_LEWATI_GAMBAR)}$"), skip_images),
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_image),
             ],
             ASK_YOUTUBE_URL: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_youtube_url),
             ],
             ASK_DELETE_NAME: [
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_BATAL)}$"), menu_batal),
+                *GLOBAL_MENU_HANDLERS,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_delete_name),
             ],
         },
