@@ -51,7 +51,7 @@ if not BOT_TOKEN:
         BOT_TOKEN = open(token_file, encoding="utf-8").read().strip()
 
 LINE_PATTERN = re.compile(
-    r"^\s*(\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2})\s+(.+?)\s*$"
+    r"(\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2})\s+(.+?)\s*$"
 )
 SRT_TIME_PATTERN = re.compile(
     r"(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})"
@@ -86,12 +86,13 @@ def parse_lines(raw_text: str):
     for i, line in enumerate(raw_text.splitlines(), start=1):
         if not line.strip():
             continue
-        m = LINE_PATTERN.match(line)
+        m = LINE_PATTERN.search(line)
         if not m:
-            errors.append(f"Baris {i} tidak dikenali formatnya: {line}")
-            continue
+            continue  # baris lain dari jawaban AI (judul, caption, dll) -> diabaikan, bukan error
         start, end, title = m.groups()
         jobs.append((start, end, title))
+    if not jobs:
+        errors.append("Tidak ditemukan baris berformat HH:MM:SS-HH:MM:SS Judul di teks yang dikirim.")
     return jobs, errors
 
 
@@ -615,7 +616,8 @@ async def receive_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ASK_PATH
     context.user_data["video_path"] = video_path
     await update.message.reply_text(
-        "Sekarang paste daftar potongannya. Format tiap baris:\n"
+        "Sekarang paste jawaban dari AI (boleh seluruh teksnya, tidak perlu dipilah manual). "
+        "Bot otomatis ambil baris berformat:\n"
         "HH:MM:SS-HH:MM:SS Judul Klip\n\n"
         "Contoh:\n"
         "00:03:52-00:04:36 Akar Masalah Semua Bisnis"
