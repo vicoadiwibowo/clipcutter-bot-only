@@ -281,6 +281,24 @@ def _run_ffmpeg_with_progress(cmd, duration, on_progress):
 
 INSERT_FADE_SECONDS = 0.4  # lama transisi fade in/out gambar sisipan (muncul & redup keluar)
 
+# Encoding SELALU pakai hardware encoder MediaCodec (GPU Android) -- tanpa
+# fallback ke libx264. Kalau ffmpeg/device tidak dukung h264_mediacodec,
+# proses akan gagal (bukan otomatis pindah ke CPU).
+GPU_VIDEO_CODEC = "h264_mediacodec"
+
+
+def _mediacodec_bitrate_for(square_size: int) -> str:
+    """Bitrate video untuk h264_mediacodec, diskalakan dari luas frame persegi.
+    MediaCodec (hardware encoder) tidak dukung mode CRF, jadi harus bitrate."""
+    base_res, base_kbps = 1080, 8000
+    kbps = int(base_kbps * (square_size / base_res) ** 2)
+    kbps = max(2500, min(kbps, 30000))
+    return f"{kbps}k"
+
+
+def _video_encode_args(square_size: int) -> list:
+    return ["-c:v", GPU_VIDEO_CODEC, "-b:v", _mediacodec_bitrate_for(square_size)]
+
 
 def cut_clip(input_path, start, end, out_path, on_progress, ass_path=None, square_size=1080, inserts=None):
     """
@@ -297,8 +315,10 @@ def cut_clip(input_path, start, end, out_path, on_progress, ass_path=None, squar
         escaped = escape_for_ffmpeg_filter(ass_path)
         base_filters.append(f"subtitles='{escaped}'")
 
-    # -ss & -t sebagai input option (sebelum -i) supaya seek akurat dan tidak ambigu
-    # begitu ada -i tambahan untuk tiap gambar sisipan setelahnya.
+    encode_args = _video_encode_args(square_size)
+
+    # -ss & -t sebagai input option (sebelum -i) supaya seek akurat dan tidak
+    # ambigu begitu ada -i tambahan untuk tiap gambar sisipan setelahnya.
     cmd = ["ffmpeg", "-y", "-ss", start, "-t", str(duration), "-i", input_path]
 
     if not inserts:
@@ -307,9 +327,7 @@ def cut_clip(input_path, start, end, out_path, on_progress, ass_path=None, squar
             "-map", "0:v:0",
             "-map", "0:a:0?",
             "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "20",
+            *encode_args,
             "-c:a", "aac",
             "-b:a", "192k",
             "-avoid_negative_ts", "make_zero",
@@ -353,9 +371,7 @@ def cut_clip(input_path, start, end, out_path, on_progress, ass_path=None, squar
         "-filter_complex", filter_complex,
         "-map", f"[{prev}]",
         "-map", "0:a:0?",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "20",
+        *encode_args,
         "-c:a", "aac",
         "-b:a", "192k",
         "-avoid_negative_ts", "make_zero",
@@ -545,8 +561,8 @@ BTN_LIST = "📃 Daftar Video"
 BTN_DELETE = "🗑️ Hapus Video"
 BTN_BATAL = "❌ Batal"
 BTN_LEWATI = "⏭️ Lewati (Tanpa Subtitle)"
-BTN_LEWATI_GAMBAR = "⏭️ Lewati (Tanpa Gambar)"
-BTN_SELESAI_GAMBAR = "✅ Selesai Tambah Gambar"
+BTN_LEWATI_GAMBAR = "⏭️ Lewati Sisa Gambar"
+BTN_LANJUT_KLIP = "➡️ Lanjut ke Klip Berikutnya"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -563,14 +579,15 @@ SRT_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 IMAGE_KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_SELESAI_GAMBAR], [BTN_LEWATI_GAMBAR], [BTN_BATAL]],
+    [[BTN_LANJUT_KLIP], [BTN_LEWATI_GAMBAR], [BTN_BATAL]],
     resize_keyboard=True,
 )
 
-# Format caption gambar insert shot: "<nomor_klip> <HH:MM:SS> <durasi_detik> [label]"
-# Nomor klip = urutan baris timestamp yang dipaste sebelumnya (klip 1, klip 2, dst).
+# Format caption gambar insert shot: "<HH:MM:SS> <durasi_detik>[s]" -- TANPA nomor
+# klip & tanpa label. Klip tujuannya otomatis ikut klip yang sedang ditanya bot
+# (alur tanya gambar dilakukan satu klip per satu klip, berurutan).
 IMAGE_CAPTION_PATTERN = re.compile(
-    r"^\s*(\d+)\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(\d+(?:\.\d+)?)\s*(.*)$"
+    r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s+(\d+(?:\.\d+)?)\s*s?\s*$"
 )
 
 
@@ -666,17 +683,37 @@ async def skip_srt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def prompt_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw_text = context.user_data.get("raw_text", "")
+    total_clips = len(parse_lines(raw_text)[0])
     context.user_data["images"] = []
+    context.user_data["images_clip_idx"] = 1
+    context.user_data["images_total_clips"] = total_clips
     await update.message.reply_text(
-        "Mau tambah gambar insert shot? Gambar akan muncul dengan transisi "
-        "fade in (muncul) lalu fade out redup (menghilang), menimpa video sesaat.\n\n"
-        "Kirim gambar satu per satu, tiap gambar sebagai CAPTION-nya isi:\n"
-        "<nomor klip> <timestamp HH:MM:SS relatif ke awal klip> <durasi tampil detik> [label opsional]\n\n"
-        "Contoh: gambar dikirim dengan caption\n"
-        "1 00:00:05 2.5 chart data\n"
-        "→ artinya masuk ke klip nomor 1, muncul di detik ke-5 klip itu, tampil 2.5 detik.\n\n"
-        "Kalau sudah selesai kirim semua gambar, tekan 'Selesai Tambah Gambar'. "
-        "Kalau tidak perlu gambar, tekan 'Lewati'.",
+        "Mau tambah gambar insert shot? Nanti ditanya satu per satu, per klip.\n\n"
+        "Kirim gambar dengan caption cukup:\n"
+        "HH:MM:SS DURASI\n"
+        "Contoh: 00:00:03 3s\n"
+        "(timestamp relatif ke awal KLIP YANG SEDANG DITANYA — tidak perlu nomor "
+        "klip lagi, bot sudah tahu ini gambar untuk klip yang mana)\n\n"
+        "Gambar akan muncul dengan transisi fade in (muncul) lalu fade out redup "
+        "(menghilang), menimpa video sesaat."
+    )
+    return await _ask_images_for_current_clip(update, context)
+
+
+async def _ask_images_for_current_clip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    idx = context.user_data.get("images_clip_idx", 1)
+    total = context.user_data.get("images_total_clips", 0)
+
+    if idx > total:
+        return await _finish_all_images(update, context)
+
+    jobs, _ = parse_lines(context.user_data.get("raw_text", ""))
+    title = jobs[idx - 1][2] if idx - 1 < len(jobs) else f"Klip {idx}"
+    await update.message.reply_text(
+        f"🖼️ Klip {idx}/{total} — \"{title}\"\n"
+        f"Kirim gambar insert shot untuk klip ini (kalau ada), atau tekan "
+        f"'{BTN_LANJUT_KLIP}' kalau tidak ada / sudah selesai untuk klip ini.",
         reply_markup=IMAGE_KEYBOARD,
     )
     return ASK_IMAGES
@@ -688,21 +725,14 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not m:
         await update.message.reply_text(
             "⚠️ Caption gambar tidak sesuai format.\n"
-            "Format: <nomor klip> <HH:MM:SS> <durasi detik> [label]\n"
-            "Contoh: 1 00:00:05 2.5 chart data\n\n"
+            "Format: HH:MM:SS DURASI\n"
+            "Contoh: 00:00:03 3s\n\n"
             "Kirim ulang gambar ini dengan caption yang benar."
         )
         return ASK_IMAGES
 
-    clip_no, ts, dur_s, label = m.groups()
-    clip_no = int(clip_no)
-    raw_text = context.user_data.get("raw_text", "")
-    total_clips = len(parse_lines(raw_text)[0])
-    if clip_no < 1 or clip_no > total_clips:
-        await update.message.reply_text(
-            f"⚠️ Nomor klip {clip_no} tidak ada (total klip: {total_clips}). Kirim ulang."
-        )
-        return ASK_IMAGES
+    ts, dur_s = m.groups()
+    clip_no = context.user_data.get("images_clip_idx", 1)
 
     if update.message.photo:
         tg_file = await update.message.photo[-1].get_file()
@@ -721,32 +751,34 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         "clip_index": clip_no,
         "start_sec": _mmss_to_seconds(ts),
         "duration": float(dur_s),
-        "label": label.strip(),
         "bytes": bytes(file_bytes),
         "ext": ext,
     })
 
     await update.message.reply_text(
-        f"✅ Gambar #{len(images)} ditambahkan → klip {clip_no} @ {ts} ({dur_s}s)."
-        " Kirim gambar lain, atau tekan 'Selesai Tambah Gambar'."
+        f"✅ Gambar ditambahkan ke Klip {clip_no} @ {ts} ({dur_s}s). "
+        f"Kirim gambar lain untuk klip ini, atau tekan '{BTN_LANJUT_KLIP}'."
     )
     return ASK_IMAGES
 
 
-async def finish_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    n = len(context.user_data.get("images", []))
-    if n == 0:
-        await update.message.reply_text("Belum ada gambar yang dikirim. Memulai proses tanpa gambar...")
-    else:
-        await update.message.reply_text(f"Oke, {n} gambar siap disisipkan. Memulai proses...")
-    await update.message.reply_text("Memproses klip...", reply_markup=MAIN_KEYBOARD)
-    await start_processing(update, context)
-    return MAIN_MENU
+async def advance_images_clip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["images_clip_idx"] = context.user_data.get("images_clip_idx", 1) + 1
+    return await _ask_images_for_current_clip(update, context)
 
 
 async def skip_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["images"] = []
-    await update.message.reply_text("Oke, tanpa gambar sisipan. Memulai proses...", reply_markup=MAIN_KEYBOARD)
+    # Lewati sisa klip yang belum ditanya -- gambar yang SUDAH ditambahkan
+    # untuk klip-klip sebelumnya tetap dipakai, tidak dihapus.
+    return await _finish_all_images(update, context)
+
+
+async def _finish_all_images(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    n = len(context.user_data.get("images", []))
+    if n == 0:
+        await update.message.reply_text("Tidak ada gambar. Memulai proses...", reply_markup=MAIN_KEYBOARD)
+    else:
+        await update.message.reply_text(f"Oke, {n} gambar siap disisipkan. Memulai proses...", reply_markup=MAIN_KEYBOARD)
     await start_processing(update, context)
     return MAIN_MENU
 
@@ -873,10 +905,14 @@ async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id
     Pantau progress semua klip dalam session ini. Begitu ada klip yang
     statusnya jadi 'done', langsung kirim videonya saat itu juga --
     tidak perlu menunggu klip lain selesai.
+
+    Status lifecycle per klip: pending -> processing -> done (ffmpeg selesai,
+    BELUM terkirim) -> uploading (sedang dikirim ke Telegram) -> sent (sudah
+    terkirim) / error.
     """
     bot = context.bot
     last_text = ""
-    sent = set()  # filename klip yang sudah terkirim, biar tidak dobel
+    sent = set()  # filename klip yang sudah diproses pengirimannya, biar tidak dobel
     ok_count = 0
 
     while True:
@@ -886,15 +922,23 @@ async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id
 
         clips = data["clips"]
 
-        # Kirim klip yang baru saja selesai (status 'done' & belum dikirim)
+        # Kirim klip yang baru saja selesai diproses ffmpeg (status 'done') & belum diupload
         for clip in clips:
             if clip["status"] == "done" and clip["filename"] not in sent:
                 sent.add(clip["filename"])
-                if await _send_clip(bot, chat_id, clip):
+                clip["status"] = "uploading"
+                ok = await _send_clip(bot, chat_id, clip)
+                clip["status"] = "sent" if ok else "error"
+                if ok:
                     ok_count += 1
 
-        done = sum(1 for c in clips if c["status"] in ("done", "error"))
-        text = f"⏳ Memproses klip... {done}/{len(clips)} selesai ({ok_count} terkirim)"
+        total = len(clips)
+        n_encoded = sum(1 for c in clips if c["status"] in ("done", "uploading", "sent", "error"))
+        n_uploading = sum(1 for c in clips if c["status"] == "uploading")
+        text = f"⏳ Proses potong: {n_encoded}/{total} selesai"
+        if n_uploading:
+            text += f" | 📤 {n_uploading} sedang dikirim ke Telegram..."
+        text += f" | ✅ {ok_count} terkirim"
         if text != last_text:
             try:
                 await bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=text)
@@ -902,7 +946,7 @@ async def watch_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, session_id
             except Exception:
                 pass
 
-        if data["finished"]:
+        if data["finished"] and all(c["status"] in ("sent", "error") for c in clips):
             break
         await asyncio.sleep(2)
 
@@ -1040,9 +1084,22 @@ async def menu_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return MAIN_MENU
 
     lines = [f"Session: {session_id}"]
+    status_label = {
+        "pending": "menunggu giliran",
+        "processing": "sedang dipotong",
+        "done": "siap, menunggu giliran upload",
+        "uploading": "sedang dikirim ke Telegram...",
+        "sent": "terkirim",
+        "error": "gagal",
+    }
+    icon = {
+        "pending": "⏳", "processing": "🔄", "done": "📦",
+        "uploading": "📤", "sent": "✅", "error": "❌",
+    }
     for c in data["clips"]:
-        icon = {"pending": "⏳", "processing": "🔄", "done": "✅", "error": "❌"}.get(c["status"], "?")
-        lines.append(f"{icon} {c['filename']} ({c['progress']}%)")
+        ic = icon.get(c["status"], "?")
+        label = status_label.get(c["status"], c["status"])
+        lines.append(f"{ic} {c['filename']} ({c['progress']}%) — {label}")
     await update.message.reply_text("\n".join(lines))
     return MAIN_MENU
 
@@ -1116,7 +1173,7 @@ def main():
             ],
             ASK_IMAGES: [
                 *GLOBAL_MENU_HANDLERS,
-                MessageHandler(filters.Regex(f"^{re.escape(BTN_SELESAI_GAMBAR)}$"), finish_images),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_LANJUT_KLIP)}$"), advance_images_clip),
                 MessageHandler(filters.Regex(f"^{re.escape(BTN_LEWATI_GAMBAR)}$"), skip_images),
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_image),
             ],
